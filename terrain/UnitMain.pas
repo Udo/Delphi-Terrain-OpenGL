@@ -1,0 +1,297 @@
+unit UnitMain;
+
+interface
+
+uses
+  Windows, Messages, SysUtils, Classes, Graphics, Controls, Forms,
+  Dialogs, OpenGL12, Math, StdCtrls, MMSystem, ExtCtrls, Buttons,
+  ComCtrls, GLTools, ToolWin, GLTypes, gl_terrainutils, model;
+
+type
+
+  TFormMain = class(TForm)
+    PanelScene: TPanel;
+    PanelFPS: TPanel;
+    Panel1: TPanel;
+    procedure FormCreate(Sender: TObject);
+    procedure ApplicationEventsIdle(Sender: TObject; var Done: Boolean);
+    procedure FormDestroy(Sender: TObject);
+    procedure FormKeyDown(Sender: TObject; var Key: Word;
+      Shift: TShiftState);
+    procedure FormKeyUp(Sender: TObject; var Key: Word;
+      Shift: TShiftState);
+    procedure FormMouseDown(Sender: TObject; Button: TMouseButton;
+      Shift: TShiftState; X, Y: Integer);
+    procedure FormMouseUp(Sender: TObject; Button: TMouseButton;
+      Shift: TShiftState; X, Y: Integer);
+    procedure FormMouseWheel(Sender: TObject; Shift: TShiftState;
+      WheelDelta: Integer; MousePos: TPoint; var Handled: Boolean);
+  private
+    { Private declarations }
+  public
+    { Public declarations }
+    GLDC: HDC;
+    GLRC: HGLRC;
+    Palette: HPALETTE;
+    Terrain: TBitmap;
+    Texture: TBitmap;
+    Camera: TGLCamera;
+
+    MDP: TPoint;
+    StartTime: TDateTime;
+    FrameCount: Integer;
+    texSnow: Integer;
+    texWater: array[0..64] of Integer;
+    texSkyFront: Integer;
+    texSkyLeft: Integer;
+    texSkyRight: Integer;
+    texSkyTop: Integer;
+    texSkyBack: Integer;
+    ViewMode: Integer;
+
+    MAX_SPEED,
+      camZOffset,
+      pitchOffset,
+      accelerate,
+      accelerateY,
+      accelerateT,
+      camPoxX,
+      camPosY,
+      currentHeight,
+      currentHeightTarget,
+      currentYSpeed,
+      currentTSpeed,
+      currentXSpeed: double;
+    keyw: word;
+
+    mouseDragPos: TPoint;
+    mouseDrag: boolean;
+
+    FogDefault: TGLFog;
+    FogWater: TGLFog;
+  end;
+
+var
+  FormMain          : TFormMain;
+  Player            : Q3Player;
+
+implementation
+
+{$R *.dfm}
+
+procedure TFormMain.FormDestroy(Sender: TObject);
+begin
+  wglResetDisplaymode;
+end;
+
+function ExePath: string;
+begin
+  Result := ExtractFilePath(Application.ExeName);
+end;
+
+procedure CreateWater(var Water: array of Integer; FileName: string);
+var I, Y, X         : Integer;
+  Bitmap1, Bitmap2  : TBitmap;
+begin
+  Bitmap1 := TBitmap.Create;
+  Bitmap2 := TBitmap.Create;
+  try
+    BitmapLoadFromFile(Bitmap1, FileName);
+    BitmapLoadFromFile(Bitmap2, FileName);
+
+    for I := Low(Water) to High(Water) do
+      begin
+        for Y := 0 to Bitmap2.Height - 1 do
+          begin
+            X := Round(Sin(DegToRad(((Y + (I / 4) * 8) * 360 / 128))) * 4);
+            Bitmap2.Canvas.CopyRect(Bounds(X - Bitmap2.Width, Y, Bitmap2.Width, 1), Bitmap1.Canvas, Bounds(0, Y, Bitmap1.Width, 1));
+            Bitmap2.Canvas.CopyRect(Bounds(X + Bitmap2.Width, Y, Bitmap2.Width, 1), Bitmap1.Canvas, Bounds(0, Y, Bitmap1.Width, 1));
+            Bitmap2.Canvas.CopyRect(Bounds(X, Y, Bitmap2.Width, 1), Bitmap1.Canvas, Bounds(0, Y, Bitmap1.Width, 1));
+          end;
+
+        Water[I] := wglBuildTexture(Bitmap2);
+      end;
+  finally
+    Bitmap1.Free;
+    Bitmap2.Free;
+  end;
+end;
+
+procedure TFormMain.FormCreate(Sender: TObject);
+var I, Y            : Integer;
+boundx,boundy : integer;
+begin
+  lightLevel := 1.38;
+  ViewMode := 1;
+  MAX_LOD := 5;
+  MAX_SPEED := 0.3;
+  currentHeight := 60;
+  currentHeightTarget := currentHeight;
+  Terrain := TBitmap.Create;
+  Texture := TBitmap.Create;
+
+
+  boundx := 1280;
+  boundy := 1024;
+  SetBounds(0, 0, boundx, boundy);
+
+  wglSetDisplayMode(boundx, boundy, 16);
+
+  // Setup and activate a OpenGL context.
+  InitOpenGL;
+
+  GLDC := GetDC(PanelScene.Handle);
+  GLRC := CreateRenderingContext(GLDC, [opDoubleBuffered], 16, 0, 0, 0, 0, Palette);
+  ActivateRenderingContext(GLDC, GLRC);
+
+  // Update the effects based on our default button settings.
+  glClearColor(0, 0, 0, 1);
+  glEnable(GL_TEXTURE_2D);
+
+  glHint(GL_FOG_HINT, GL_FASTEST);
+  glHint(GL_PERSPECTIVE_CORRECTION_HINT, GL_FASTEST);
+
+  // Load our terrain and textures.
+  Terrain.LoadFromFile(ExePath + 'textures/Terrain.bmp');
+  // Cache the row pointers of the terrain map.
+  for I := 0 to Terrain.Height - 1 do HeightArray[I] := Terrain.Scanline[I];
+
+  texSnow := wglLoadTexture(ExePath + 'textures/snow512.jpg');
+  //texSnow := wglLoadTexture(ExePath + 'textures/PB221050.JPG');
+  texSkyFront := wglLoadTexture(ExePath + 'textures/frozen_ft.jpg');
+  texSkyLeft := wglLoadTexture(ExePath + 'textures/frozen_rt.jpg');
+  texSkyRight := wglLoadTexture(ExePath + 'textures/frozen_lf.jpg');
+  texSkyTop := wglLoadTexture(ExePath + 'textures/frozen_up.jpg');
+  texSkyBack := wglLoadTexture(ExePath + 'textures/frozen_bk.jpg');
+
+  //CreateWater(texWater, ExePath + 'textures/WTR03-S2.BMP');
+  CreateWater(texWater, ExePath + 'textures/water_texture.bmp');
+
+  FogDefault.Color.Init(0.5, 0.5, 0.6, 1);
+  FogDefault.Density := 0.002;
+
+  FogWater.Color.Init(0.0, 0.3, 0.5, 1);
+  FogWater.Density := 0.06;
+
+  Player.LoadPlayer('model\sarge\', 'default');
+
+  Application.OnIdle := ApplicationEventsIdle;
+end;
+
+procedure glFogColor(R, G, B, A: Single);
+begin
+end;
+
+procedure TFormMain.ApplicationEventsIdle(Sender: TObject; var Done: Boolean);
+var
+  V                 : TVector4f;
+begin
+  Done := False;
+
+  // Setup the rendering perspective and viewport.
+  with PanelScene do
+    begin
+      glViewport(0, 0, ClientWidth, ClientHeight);
+      glMatrixMode(GL_PROJECTION);
+      glLoadIdentity;
+      if ViewMode = 0 then gluPerspective(65, ClientWidth / Max(ClientHeight, 1), 0.2, 300);
+      if ViewMode = 1 then gluPerspective(65, ClientWidth / Max(ClientHeight, 1), 10, 200);
+      glMatrixMode(GL_MODELVIEW);
+    end;
+
+  // Setup and clear our buffers. Setup default rendering settings.
+  // It is not required to clear the color buffer since we have a full display,
+  // but we need it for wireframe rendering.
+  glClear(GL_COLOR_BUFFER_BIT or GL_DEPTH_BUFFER_BIT);
+  glEnable(GL_DEPTH_TEST);
+  glEnable(GL_CULL_FACE);
+
+  handleCameraPos();
+
+  // Render our world given the current camera rotation and position.
+  if ViewMode = 0 then RenderWorld(Camera, 0, 4);
+  if ViewMode = 1 then RenderWorld(Camera, 0, 2);
+  //if ViewMode = 1 then RenderWorld(Camera, 2, 2);
+
+  // Flush and swap the display buffers.
+  glFlush();
+  SwapBuffers(wglGetCurrentDC);
+
+  // Calculate and display the engines FPS rate.
+  if StartTime = 0 then StartTime := timeGetTime - 1;
+  Inc(FrameCount);
+  PanelFPS.Caption := Format('%f FPS', [FrameCount * 1000 / (timeGetTime - StartTime)]) +
+  ' ' + inttostr(round(Camera.X)) + ':' + inttostr(round(Camera.Y)) + ':' + inttostr(round(Camera.Z));
+end;
+
+// UI stuff
+
+procedure TFormMain.FormKeyDown(Sender: TObject; var Key: Word;
+  Shift: TShiftState);
+begin
+  case char(key) of
+    #27: Close;
+    'T': glSetEnable(GL_TEXTURE_2D, not glIsEnabled(GL_TEXTURE_2D));
+    'L': glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+    'P': glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+    '1': ViewMode := 0;
+    '2': ViewMode := 1;
+    'W': accelerate := 1;
+    'S': accelerate := -1;
+    'A': accelerateY := 1;
+    'D': accelerateY := -1;
+    'Q': begin accelerateT := 1; accelerateY := 1; end;
+    'E': begin accelerateT := -1; accelerateY := -1; end;
+    'M': lightLevel := lightLevel + 0.1;
+    'N': lightLevel := lightLevel - 0.1;
+    'K': MAX_LOD := MAX_LOD + 1;
+    'J': MAX_LOD := MAX_LOD - 1;
+  end;
+  if lightLevel > 2 then lightLevel := 2;
+  if lightLevel < 0.1 then lightLevel := 0.1;
+  keyw := key;
+end;
+
+procedure TFormMain.FormKeyUp(Sender: TObject; var Key: Word;
+  Shift: TShiftState);
+begin
+  case char(key) of
+    'W': accelerate := 0;
+    'S': accelerate := 0;
+    'Q': begin accelerateT := 0; accelerateY := 0; end;
+    'E': begin accelerateT := 0; accelerateY := 0; end;
+    'A': accelerateY := 0;
+    'D': accelerateY := 0;
+  end;
+end;
+
+procedure TFormMain.FormMouseDown(Sender: TObject; Button: TMouseButton;
+  Shift: TShiftState; X, Y: Integer);
+begin
+  if button = (mbright) then
+    begin
+      mouseDrag := true;
+      mouseDragPos := Point(Mouse.CursorPos.X, Mouse.CursorPos.Y);
+    end;
+end;
+
+procedure TFormMain.FormMouseUp(Sender: TObject; Button: TMouseButton;
+  Shift: TShiftState; X, Y: Integer);
+begin
+  if button = (mbright) then
+    begin
+      mouseDrag := false;
+      Mouse.CursorPos := mouseDragPos;
+    end;
+end;
+
+procedure TFormMain.FormMouseWheel(Sender: TObject; Shift: TShiftState;
+  WheelDelta: Integer; MousePos: TPoint; var Handled: Boolean);
+begin
+  currentHeightTarget := currentHeightTarget + (WheelDelta / 20);
+  if currentHeightTarget > 80 then currentHeightTarget := 80;
+  if currentHeightTarget < 20 then currentHeightTarget := 20;
+end;
+
+end.
+

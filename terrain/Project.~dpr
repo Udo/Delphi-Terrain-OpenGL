@@ -1,0 +1,14 @@
+program Project;
+
+uses
+  Forms,
+  UnitMain in 'UnitMain.pas' {FormMain},
+  GLTypes in 'GLTypes.pas';
+
+{$R *.res}
+
+begin
+  Application.Initialize;
+  Application.CreateForm(TFormMain, FormMain);
+  Application.Run;
+end.

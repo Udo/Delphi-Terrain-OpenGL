@@ -1,0 +1,99 @@
+unit GLTools;
+
+interface
+
+uses Windows, Graphics, SysUtils, OpenGL12, StrUtils, JPEG;
+
+procedure wglSetDisplayMode(const Width, Height, BPP: Integer);
+procedure wglResetDisplaymode;
+procedure glSetEnable(Cap: Cardinal; Enabled: Boolean);
+function glGetEnabled(const Cap: Cardinal): Boolean;
+function wglLoadTexture(const FileName: TFileName): Integer;
+function wglBuildTexture(const Bitmap: TBitmap): Integer;
+procedure BitmapLoadFromFile(const Bitmap: TBitmap; const FileName: string);
+
+implementation
+
+procedure wglSetDisplayMode(const Width, Height, BPP: Integer);
+var DevMode         : TDevMode;
+begin
+  with DevMode do
+    begin
+      dmSize := SizeOf(TDeviceMode);
+      dmPelsWidth := Width;
+      dmPelsHeight := Height;
+      dmBitsPerPel := BPP;
+      dmFields := DM_PELSWIDTH or DM_PELSHEIGHT or DM_BITSPERPEL;
+      ChangeDisplaySettings(DevMode, CDS_FULLSCREEN);
+    end;
+end;
+
+procedure wglResetDisplaymode;
+var DevMode         : PDevMode;
+begin
+  DevMode := nil;
+  ChangeDisplaySettings(DevMode^, CDS_FULLSCREEN);
+end;
+
+(*
+** Name: glSetEnable
+** Desc: A little tool that comes in handy for enabling GL effects.
+*)
+
+procedure glSetEnable(Cap: Cardinal; Enabled: Boolean);
+begin
+  if Enabled then glEnable(Cap) else glDisable(Cap);
+end;
+
+function glGetEnabled(const Cap: Cardinal): Boolean;
+begin
+  glGetBooleanv(Cap, @Result);
+end;
+
+procedure BitmapLoadFromJPEG(const Bitmap: TBitmap; const FileName: string);
+var JPEG            : TJPEGImage;
+begin
+  JPEG := TJPEGImage.Create;
+  try
+    JPEG.LoadFromFile(FileName);
+    Bitmap.Assign(JPEG);
+  finally
+    JPEG.Free;
+  end;
+end;
+
+procedure BitmapLoadFromFile(const Bitmap: TBitmap; const FileName: string);
+begin
+  case AnsiIndexText(ExtractFileExt(FileName), ['.jpg', '.jpeg']) of
+    0, 1: BitmapLoadFromJPEG(Bitmap, FileName);
+    else
+      Bitmap.LoadFromFile(FileName);
+  end;
+end;
+
+function wglBuildTexture(const Bitmap: TBitmap): Integer;
+begin
+  glGenTextures(1, @Result);
+  glBindTexture(GL_TEXTURE_2D, Result);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+
+  Bitmap.PixelFormat := pf24bit;
+  gluBuild2DMipmaps(GL_TEXTURE_2D, 3, Bitmap.Width, Bitmap.Height, GL_BGR, GL_UNSIGNED_BYTE,
+    Bitmap.ScanLine[Bitmap.Height - 1]);
+end;
+
+function wglLoadTexture(const FileName: TFileName): Integer;
+var Bitmap          : TBitmap;
+begin
+  Bitmap := TBitmap.Create;
+  try
+    BitmapLoadFromFile(Bitmap, FileName);
+    Result := wglBuildTexture(Bitmap);
+  finally
+    Bitmap.Free;
+  end;
+end;
+
+end.
+
